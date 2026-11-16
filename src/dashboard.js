@@ -57,6 +57,18 @@ export function startDashboard() {
       return;
     }
 
+    if (url.pathname === '/api/debug-bms') {
+      try {
+        const { debugBmsFetch } = await import('./checkShowsTls.js');
+        const date = url.searchParams.get('date') || config.targetDates[0];
+        const info = await debugBmsFetch(date);
+        json(res, 200, info);
+      } catch (err) {
+        json(res, 500, { ok: false, error: err.message || String(err) });
+      }
+      return;
+    }
+
     // Local worker posts BMS check results here (Render IPs are blocked by BMS)
     if (url.pathname === '/api/ingest' && req.method === 'POST') {
       const auth = req.headers.authorization || '';
