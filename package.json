@@ -1,0 +1,21 @@
+{
+  "name": "bookmyshow-friday-alert",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitor BookMyShow dates and alert when Broadway showtimes are listed",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "check-once": "node src/index.js --once",
+    "dashboard": "node src/index.js",
+    "vapid": "node scripts/generate-vapid.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "playwright": "^1.49.1",
+    "web-push": "^4.0.0"
+  }
+}

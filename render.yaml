@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ramayana-bms-monitor
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: BMS_URL
+        sync: false
+      - key: TARGET_DATES
+        sync: false
+      - key: CINEMA_NAME
+        value: Broadway Cinemas
+      - key: FORMAT_HINT
+        value: IMAX
+      - key: POLL_INTERVAL_MS
+        value: "60000"
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:you@example.com
