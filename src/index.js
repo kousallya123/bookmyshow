@@ -6,13 +6,18 @@ import { processCheckResults } from './processResults.js';
 const once = process.argv.includes('--once');
 
 async function loadChecker() {
-  const mod = await import('./checkShows.js');
+  // TLS Safari fingerprint works on Render (Playwright gets Cloudflare 403)
+  if (config.checkMode === 'playwright') {
+    const mod = await import('./checkShows.js');
+    return mod.checkAllDates;
+  }
+  const mod = await import('./checkShowsTls.js');
   return mod.checkAllDates;
 }
 
-async function runCheckLocal() {
+async function runCheck() {
   console.log(
-    `\n[${new Date().toLocaleString()}] Checking dates: ${config.targetDates.join(', ')}`,
+    `\n[${new Date().toLocaleString()}] Checking dates: ${config.targetDates.join(', ')} [${config.checkMode}]`,
   );
 
   const prevStatus = readStatus();
@@ -25,54 +30,9 @@ async function runCheckLocal() {
 
   const checkAllDates = await loadChecker();
   const results = await checkAllDates(config.targetDates);
-  await processCheckResults(results, { source: 'local' });
-  return results;
-}
-
-async function runCheckWorker() {
-  if (!config.reportUrl) {
-    throw new Error('REPORT_URL is required for ROLE=worker (your Render app URL)');
-  }
-  if (!config.ingestSecret) {
-    throw new Error('INGEST_SECRET is required for ROLE=worker');
-  }
-
-  console.log(
-    `\n[${new Date().toLocaleString()}] Worker checking: ${config.targetDates.join(', ')}`,
-  );
-  console.log(`[worker] Reporting to ${config.reportUrl}/api/ingest`);
-
-  const checkAllDates = await loadChecker();
-  const results = await checkAllDates(config.targetDates);
-
-  for (const result of results) {
-    if (result.listed) {
-      console.log(`[worker] ${result.label}: OPEN → ${(result.shows || []).join(', ') || 'open'}`);
-    } else {
-      console.log(`[worker] ${result.label}: ${result.reason || result.error || 'not open'}`);
-    }
-  }
-
-  const res = await fetch(`${config.reportUrl}/api/ingest`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.ingestSecret}`,
-    },
-    body: JSON.stringify({
-      results,
-      cinemaName: config.cinemaName,
-      formatHint: config.formatHint,
-      targetDates: config.targetDates,
-      bmsUrl: config.bmsUrl,
-    }),
+  await processCheckResults(results, {
+    source: config.checkMode === 'tls' ? 'render-tls' : 'local',
   });
-
-  const body = await res.text();
-  if (!res.ok) {
-    throw new Error(`Ingest failed HTTP ${res.status}: ${body.slice(0, 200)}`);
-  }
-  console.log(`[worker] Ingest OK: ${body.slice(0, 120)}`);
   return results;
 }
 
@@ -80,7 +40,7 @@ function seedStatus() {
   writeStatus({
     updatedAt: null,
     checking: false,
-    source: config.role === 'dashboard' ? 'waiting-for-worker' : 'local',
+    source: 'starting',
     cinemaName: config.cinemaName,
     formatHint: config.formatHint,
     targetDates: config.targetDates,
@@ -95,10 +55,7 @@ function seedStatus() {
       pageUrl: buildBmsUrl(date),
       checkedAt: null,
       error: null,
-      reason:
-        config.role === 'dashboard'
-          ? 'Waiting for local worker (Render cannot open BookMyShow)'
-          : 'Waiting for first check',
+      reason: 'Waiting for first check',
     })),
     alerts: [],
     alert: null,
@@ -107,7 +64,7 @@ function seedStatus() {
 
 async function main() {
   console.log('BookMyShow booking monitor');
-  console.log(`ROLE=${config.role}`);
+  console.log(`ROLE=${config.role} | CHECK_MODE=${config.checkMode}`);
   console.log(`Rule: redirect = NOT OPEN | stay on date = OPEN`);
   console.log(`Base URL: ${config.bmsUrl}`);
   for (const d of config.targetDates) {
@@ -115,40 +72,27 @@ async function main() {
     console.log(`  ${parts.label} (${d}) → ${buildBmsUrl(d)}`);
   }
 
-  if (config.role === 'dashboard' || config.role === 'all') {
-    startDashboard();
-    seedStatus();
-  }
-
-  if (config.role === 'dashboard') {
-    console.log('Dashboard-only mode: no Playwright on this server.');
-    console.log('Run on your PC: npm run worker  (with REPORT_URL + INGEST_SECRET)');
-    await new Promise(() => {});
-    return;
-  }
-
-  const run = config.role === 'worker' ? runCheckWorker : runCheckLocal;
+  startDashboard();
+  seedStatus();
 
   if (once) {
-    await run();
+    await runCheck();
     return;
   }
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      await run();
+      await runCheck();
     } catch (err) {
       console.error('[error]', err.message || err);
-      if (config.role !== 'worker') {
-        const prev = readStatus();
-        writeStatus({
-          ...prev,
-          updatedAt: new Date().toISOString(),
-          checking: false,
-          error: err.message || String(err),
-        });
-      }
+      const prev = readStatus();
+      writeStatus({
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        checking: false,
+        error: err.message || String(err),
+      });
     }
     console.log(`Sleeping ${config.pollIntervalMs / 1000}s...`);
     await new Promise((r) => setTimeout(r, config.pollIntervalMs));

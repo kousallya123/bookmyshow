@@ -636,14 +636,11 @@
       }
 
       function render(status) {
-        const src =
-          status.source === 'worker'
-            ? 'via local worker'
-            : status.source === 'waiting-for-worker'
-              ? 'waiting for worker'
-              : status.checking
-                ? 'checking…'
-                : 'idle';
+        const src = status.checking
+          ? 'checking…'
+          : status.source === 'render-tls'
+            ? 'cloud monitor'
+            : status.source || 'idle';
         subtitle.textContent = `${status.cinemaName || 'Broadway Cinemas'} · Coimbatore · ${src}`;
 
         const statusError = document.getElementById('statusError');

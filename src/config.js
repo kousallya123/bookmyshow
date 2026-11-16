@@ -66,21 +66,18 @@ export function targetDateParts(isoDate) {
   };
 }
 
-/** dashboard = Render UI+push only | worker = local BMS checks | all = both */
-// On Render/cloud, default to dashboard — BMS blocks datacenter IPs (403)
-const defaultRole =
-  process.env.RENDER || process.env.NODE_ENV === 'production' ? 'dashboard' : 'all';
-const role = (process.env.ROLE || defaultRole).toLowerCase();
+/** tls = Safari fingerprint (works on Render) | playwright = local browser */
+const checkMode = (process.env.CHECK_MODE || 'tls').toLowerCase();
 
 export const config = {
-  role,
+  role: (process.env.ROLE || 'all').toLowerCase(),
+  checkMode: checkMode === 'playwright' ? 'playwright' : 'tls',
   bmsUrl: process.env.BMS_URL || DEFAULT_BMS_URL,
   targetDates: parseDates(),
   cinemaName: (process.env.CINEMA_NAME || 'Broadway Cinemas').trim(),
   formatHint: (process.env.FORMAT_HINT || 'IMAX').trim(),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 60_000),
   dashboardPort: Number(process.env.PORT || process.env.DASHBOARD_PORT || 3847),
-  // Local worker posts results here (Render public URL)
   reportUrl: (process.env.REPORT_URL || '').replace(/\/$/, ''),
   ingestSecret: process.env.INGEST_SECRET || '',
 };

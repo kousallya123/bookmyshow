@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.7",
+    "node-tls-client": "^2.2.1",
     "playwright": "^1.49.1",
     "web-push": "^4.0.0"
   }
