@@ -636,9 +636,15 @@
       }
 
       function render(status) {
-        subtitle.textContent = `${status.cinemaName || 'Broadway Cinemas'} · Coimbatore · ${
-          status.checking ? 'checking…' : 'idle'
-        }`;
+        const src =
+          status.source === 'worker'
+            ? 'via local worker'
+            : status.source === 'waiting-for-worker'
+              ? 'waiting for worker'
+              : status.checking
+                ? 'checking…'
+                : 'idle';
+        subtitle.textContent = `${status.cinemaName || 'Broadway Cinemas'} · Coimbatore · ${src}`;
 
         const statusError = document.getElementById('statusError');
         if (status.error) {

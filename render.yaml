@@ -10,6 +10,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: ROLE
+        value: dashboard
       - key: BMS_URL
         sync: false
       - key: TARGET_DATES
@@ -18,8 +20,8 @@ services:
         value: Broadway Cinemas
       - key: FORMAT_HINT
         value: IMAX
-      - key: POLL_INTERVAL_MS
-        value: "60000"
+      - key: INGEST_SECRET
+        sync: false
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY

@@ -10,9 +10,9 @@ const DEFAULT_BMS_URL =
 
 function parseDates() {
   const raw =
-      process.env.TARGET_DATES ||
-      process.env.TARGET_DATE ||
-      '2026-11-20,2026-11-19,2026-11-18,2026-11-21';
+    process.env.TARGET_DATES ||
+    process.env.TARGET_DATE ||
+    '2026-11-20,2026-11-19';
 
   const list = raw
     .split(/[,;\s]+/)
@@ -66,12 +66,18 @@ export function targetDateParts(isoDate) {
   };
 }
 
+/** dashboard = Render UI+push only | worker = local BMS checks | all = both */
+const role = (process.env.ROLE || 'all').toLowerCase();
+
 export const config = {
+  role,
   bmsUrl: process.env.BMS_URL || DEFAULT_BMS_URL,
   targetDates: parseDates(),
   cinemaName: (process.env.CINEMA_NAME || 'Broadway Cinemas').trim(),
   formatHint: (process.env.FORMAT_HINT || 'IMAX').trim(),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 60_000),
-  // Render/Railway set PORT; local default 3847
   dashboardPort: Number(process.env.PORT || process.env.DASHBOARD_PORT || 3847),
+  // Local worker posts results here (Render public URL)
+  reportUrl: (process.env.REPORT_URL || '').replace(/\/$/, ''),
+  ingestSecret: process.env.INGEST_SECRET || '',
 };

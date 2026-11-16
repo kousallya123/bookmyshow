@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { readStatus, writeStatus } from './statusStore.js';
 import { getVapidPublicKey, saveSubscription, removeSubscription } from './push.js';
+import { processCheckResults } from './processResults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -45,7 +46,35 @@ export function startDashboard() {
     const url = new URL(req.url || '/', `http://localhost:${config.dashboardPort}`);
 
     if (url.pathname === '/api/health') {
-      json(res, 200, { ok: true, ts: new Date().toISOString() });
+      const status = readStatus();
+      json(res, 200, {
+        ok: true,
+        ts: new Date().toISOString(),
+        role: config.role,
+        source: status.source || null,
+        updatedAt: status.updatedAt || null,
+      });
+      return;
+    }
+
+    // Local worker posts BMS check results here (Render IPs are blocked by BMS)
+    if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      const auth = req.headers.authorization || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (!config.ingestSecret || token !== config.ingestSecret) {
+        json(res, 401, { ok: false, error: 'unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const results = Array.isArray(body.results) ? body.results : [];
+      if (!results.length) {
+        json(res, 400, { ok: false, error: 'results[] required' });
+        return;
+      }
+
+      const out = await processCheckResults(results, { source: 'worker' });
+      json(res, 200, { ok: true, alerts: out.alerts.length, dates: out.dates.length });
       return;
     }
 

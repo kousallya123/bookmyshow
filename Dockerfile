@@ -1,15 +1,16 @@
-FROM mcr.microsoft.com/playwright:v1.65.0-jammy
+# Lightweight dashboard image for Render (no Playwright — BMS blocks cloud IPs)
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npx playwright install chromium
+RUN npm ci --omit=dev
 
 COPY . .
 
 ENV NODE_ENV=production
+ENV ROLE=dashboard
 ENV PORT=10000
-ENV PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL=0
 
 EXPOSE 10000
 
