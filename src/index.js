@@ -1,10 +1,14 @@
 import { config, buildBmsUrl, targetDateParts } from './config.js';
-import { checkAllDates } from './checkShows.js';
 import { startDashboard } from './dashboard.js';
 import { writeStatus, readStatus } from './statusStore.js';
 import { processCheckResults } from './processResults.js';
 
 const once = process.argv.includes('--once');
+
+async function loadChecker() {
+  const mod = await import('./checkShows.js');
+  return mod.checkAllDates;
+}
 
 async function runCheckLocal() {
   console.log(
@@ -19,6 +23,7 @@ async function runCheckLocal() {
     targetDates: config.targetDates,
   });
 
+  const checkAllDates = await loadChecker();
   const results = await checkAllDates(config.targetDates);
   await processCheckResults(results, { source: 'local' });
   return results;
@@ -37,6 +42,7 @@ async function runCheckWorker() {
   );
   console.log(`[worker] Reporting to ${config.reportUrl}/api/ingest`);
 
+  const checkAllDates = await loadChecker();
   const results = await checkAllDates(config.targetDates);
 
   for (const result of results) {
@@ -115,9 +121,8 @@ async function main() {
   }
 
   if (config.role === 'dashboard') {
-    console.log('Dashboard-only mode: BMS checks must come from local worker (ROLE=worker).');
-    console.log('Keepalive cron should hit /api/health; worker posts to /api/ingest.');
-    // Keep process alive
+    console.log('Dashboard-only mode: no Playwright on this server.');
+    console.log('Run on your PC: npm run worker  (with REPORT_URL + INGEST_SECRET)');
     await new Promise(() => {});
     return;
   }

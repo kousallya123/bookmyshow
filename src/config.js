@@ -67,7 +67,10 @@ export function targetDateParts(isoDate) {
 }
 
 /** dashboard = Render UI+push only | worker = local BMS checks | all = both */
-const role = (process.env.ROLE || 'all').toLowerCase();
+// On Render/cloud, default to dashboard — BMS blocks datacenter IPs (403)
+const defaultRole =
+  process.env.RENDER || process.env.NODE_ENV === 'production' ? 'dashboard' : 'all';
+const role = (process.env.ROLE || defaultRole).toLowerCase();
 
 export const config = {
   role,

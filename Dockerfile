@@ -1,10 +1,11 @@
-# Lightweight dashboard image for Render (no Playwright — BMS blocks cloud IPs)
+# Dashboard-only image for Render (no Playwright browsers)
 FROM node:20-bookworm-slim
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+  && npm uninstall playwright --omit=dev || true
 
 COPY . .
 
