@@ -26,7 +26,11 @@ function findPlaywrightChrome() {
 async function launchBrowser() {
   process.env.PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL = '0';
 
-  const args = ['--disable-blink-features=AutomationControlled'];
+  const args = [
+    '--disable-blink-features=AutomationControlled',
+    '--no-sandbox',
+    '--disable-dev-shm-usage',
+  ];
   const errors = [];
 
   for (const channel of ['chrome', 'msedge']) {
@@ -58,11 +62,36 @@ function urlDateCompact(url) {
   return (String(url).match(/\/(\d{8})(?:\?|$)/) || [])[1] || null;
 }
 
+function closedResult(isoDate, target, finalUrl, redirectedTo, reason) {
+  return {
+    date: isoDate,
+    label: target.label,
+    listed: false,
+    open: false,
+    shows: [],
+    newShows: [],
+    pageUrl: finalUrl,
+    redirectedTo,
+    checkedAt: new Date().toISOString(),
+    error: null,
+    reason,
+  };
+}
+
+async function softWaitForPage(page) {
+  // Never throw — Promise.race rejects if waitForSelector times out otherwise
+  await Promise.race([
+    page.waitForSelector('text=Broadway', { timeout: 18_000 }).catch(() => null),
+    page.waitForSelector('text=/\\d{1,2}:\\d{2}\\s*(AM|PM)/i', { timeout: 18_000 }).catch(() => null),
+    page.waitForSelector('text=/No [Ss]hows|Select a Date|Book tickets/i', { timeout: 18_000 }).catch(() => null),
+    page.waitForTimeout(18_000),
+  ]);
+}
+
 /**
- * Only two outcomes:
- * - redirected away from target date → NOT OPEN
- * - URL stays on target date → OPEN (booking available)
- * Showtimes are scraped only for display / "new show" alerts.
+ * redirect away → NOT OPEN
+ * stay on date + booking UI loaded → OPEN
+ * stay but page blocked/empty → soft failure (retry next loop), not OPEN
  */
 export async function checkDateBooking(isoDate, browser) {
   const target = targetDateParts(isoDate);
@@ -72,26 +101,33 @@ export async function checkDateBooking(isoDate, browser) {
   try {
     const context = await browserInstance.newContext({
       userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       locale: 'en-IN',
       viewport: { width: 1365, height: 900 },
-      extraHTTPHeaders: { 'Accept-Language': 'en-IN,en;q=0.9' },
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-IN,en;q=0.9',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      },
     });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+
     const page = await context.newPage();
-    page.setDefaultTimeout(45_000);
+    page.setDefaultTimeout(30_000);
 
     const startUrl = buildBmsUrl(isoDate);
     console.log(`[check] ${target.label} → ${startUrl}`);
-    await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-    await dismissPopups(page);
 
-    await Promise.race([
-      page.waitForSelector('text=Broadway', { timeout: 12_000 }),
-      page.waitForSelector('text=/\\d{1,2}:\\d{2}\\s*(AM|PM)/i', { timeout: 12_000 }),
-      page.waitForTimeout(12_000),
-    ]);
+    const response = await page.goto(startUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 45_000,
+    });
     await dismissPopups(page);
-    await page.waitForTimeout(1000);
+    await softWaitForPage(page);
+    await dismissPopups(page);
+    await page.waitForTimeout(1500);
 
     let finalUrl = page.url();
     let pageCompact = urlDateCompact(finalUrl);
@@ -99,29 +135,77 @@ export async function checkDateBooking(isoDate, browser) {
     if (pageCompact && pageCompact !== target.compact) {
       console.log(`[check] ${target.label}: NOT OPEN (redirect ${target.compact} → ${pageCompact})`);
       await context.close();
-      return {
-        date: isoDate,
-        label: target.label,
-        listed: false,
-        open: false,
-        shows: [],
-        newShows: [],
-        pageUrl: finalUrl,
-        redirectedTo: pageCompact,
-        checkedAt: new Date().toISOString(),
-        error: null,
-        reason: 'Not open (BMS redirected)',
-      };
+      return closedResult(
+        isoDate,
+        target,
+        finalUrl,
+        pageCompact,
+        `Not open (BMS redirected to ${pageCompact})`,
+      );
     }
 
-    // Optional: click date strip; if BMS then redirects away → not open
     await trySelectDate(page, target);
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(1200);
     finalUrl = page.url();
     pageCompact = urlDateCompact(finalUrl);
 
     if (pageCompact && pageCompact !== target.compact) {
       console.log(`[check] ${target.label}: NOT OPEN (moved to ${pageCompact})`);
+      await context.close();
+      return closedResult(
+        isoDate,
+        target,
+        finalUrl,
+        pageCompact,
+        `Not open (BMS redirected to ${pageCompact})`,
+      );
+    }
+
+    const snapshot = await page.evaluate(({ cinemaName }) => {
+      const bodyText = document.body?.innerText || '';
+      const lower = bodyText.toLowerCase();
+      const timeRe = /\b([01]?\d|2[0-3]):[0-5]\d\s?(AM|PM)\b/gi;
+
+      let shows = [];
+      for (const el of document.querySelectorAll('a, div, section, li, article')) {
+        const t = (el.innerText || '').trim();
+        if (!t || t.length > 1200) continue;
+        if (!t.toLowerCase().includes(cinemaName.toLowerCase())) continue;
+        const local = [...t.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim());
+        if (local.length) {
+          shows = [...new Set(local)];
+          break;
+        }
+      }
+      if (!shows.length && lower.includes(cinemaName.toLowerCase())) {
+        shows = [...new Set([...bodyText.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim()))];
+      }
+
+      const blocked =
+        bodyText.length < 80 ||
+        /access denied|unusual traffic|captcha|please verify|bot detected|403 forbidden/i.test(
+          bodyText,
+        );
+
+      const hasBookingUi =
+        lower.includes(cinemaName.toLowerCase()) ||
+        shows.length > 0 ||
+        /no shows|select a date|showtimes|book tickets|venues?/i.test(bodyText);
+
+      return {
+        shows,
+        blocked,
+        hasBookingUi,
+        bodyLen: bodyText.length,
+        preview: bodyText.slice(0, 160).replace(/\s+/g, ' '),
+      };
+    }, { cinemaName: config.cinemaName });
+
+    const status = response?.status?.() ?? 0;
+    if (snapshot.blocked || (status >= 400 && status !== 404)) {
+      console.log(
+        `[check] ${target.label}: page not ready (status=${status}, bodyLen=${snapshot.bodyLen}) ${snapshot.preview}`,
+      );
       await context.close();
       return {
         date: isoDate,
@@ -131,33 +215,35 @@ export async function checkDateBooking(isoDate, browser) {
         shows: [],
         newShows: [],
         pageUrl: finalUrl,
-        redirectedTo: pageCompact,
+        redirectedTo: null,
         checkedAt: new Date().toISOString(),
         error: null,
-        reason: 'Not open (BMS redirected)',
+        reason: 'BMS page did not load (will retry)',
       };
     }
 
-    // OPEN — URL stayed on this date
-    const shows = await page.evaluate(({ cinemaName }) => {
-      const bodyText = document.body?.innerText || '';
-      const timeRe = /\b([01]?\d|2[0-3]):[0-5]\d\s?(AM|PM)\b/gi;
-      for (const el of document.querySelectorAll('a, div, section, li, article')) {
-        const t = (el.innerText || '').trim();
-        if (!t || t.length > 1200) continue;
-        if (!t.toLowerCase().includes(cinemaName.toLowerCase())) continue;
-        const local = [...t.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim());
-        if (local.length) return [...new Set(local)];
-      }
-      if (bodyText.toLowerCase().includes(cinemaName.toLowerCase())) {
-        return [...new Set([...bodyText.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim()))];
-      }
-      return [];
-    }, { cinemaName: config.cinemaName });
+    // URL stayed on target date and booking UI is present → OPEN
+    if (!snapshot.hasBookingUi) {
+      console.log(`[check] ${target.label}: URL ok but booking UI missing — retry later`);
+      await context.close();
+      return {
+        date: isoDate,
+        label: target.label,
+        listed: false,
+        open: false,
+        shows: [],
+        newShows: [],
+        pageUrl: finalUrl,
+        redirectedTo: null,
+        checkedAt: new Date().toISOString(),
+        error: null,
+        reason: 'Booking UI not loaded yet (will retry)',
+      };
+    }
 
     console.log(
       `[check] ${target.label}: OPEN` +
-        (shows.length ? ` → ${shows.join(', ')}` : ' (no show times parsed yet)'),
+        (snapshot.shows.length ? ` → ${snapshot.shows.join(', ')}` : ' (showtimes pending parse)'),
     );
 
     await context.close();
@@ -167,7 +253,7 @@ export async function checkDateBooking(isoDate, browser) {
       label: target.label,
       listed: true,
       open: true,
-      shows,
+      shows: snapshot.shows,
       newShows: [],
       pageUrl: finalUrl,
       redirectedTo: null,
@@ -176,6 +262,7 @@ export async function checkDateBooking(isoDate, browser) {
       reason: null,
     };
   } catch (err) {
+    console.log(`[check] ${target.label}: soft-fail → ${err.message || err}`);
     return {
       date: isoDate,
       label: target.label,
@@ -186,8 +273,8 @@ export async function checkDateBooking(isoDate, browser) {
       pageUrl: buildBmsUrl(isoDate),
       redirectedTo: null,
       checkedAt: new Date().toISOString(),
-      error: err.message || String(err),
-      reason: null,
+      error: null,
+      reason: `Check failed (will retry): ${err.message || err}`,
     };
   } finally {
     if (ownBrowser) await browserInstance.close();
@@ -245,6 +332,7 @@ async function dismissPopups(page) {
     'button:has-text("Accept")',
     'button:has-text("Got it")',
     'button:has-text("Continue")',
+    'button:has-text("Allow")',
     '[aria-label="Close"]',
     'button:has-text("Close")',
   ];
