@@ -3,8 +3,13 @@ services:
     name: ramayana-bms-monitor
     runtime: docker
     plan: free
+    region: singapore
     healthCheckPath: /api/health
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: BMS_URL
         sync: false
       - key: TARGET_DATES
