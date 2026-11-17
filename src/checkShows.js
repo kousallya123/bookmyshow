@@ -62,10 +62,11 @@ function urlDateCompact(url) {
   return (String(url).match(/\/(\d{8})(?:\?|$)/) || [])[1] || null;
 }
 
-function closedResult(isoDate, target, finalUrl, redirectedTo, reason) {
+function closedResult(isoDate, target, finalUrl, redirectedTo, reason, cinemaName = null) {
   return {
     date: isoDate,
     label: target.label,
+    cinemaName: cinemaName || null,
     listed: false,
     open: false,
     shows: [],
@@ -78,10 +79,25 @@ function closedResult(isoDate, target, finalUrl, redirectedTo, reason) {
   };
 }
 
-async function softWaitForPage(page) {
-  // Never throw — Promise.race rejects if waitForSelector times out otherwise
+function resolveCinemaNames(options = {}) {
+  const fromList = Array.isArray(options.cinemaNames)
+    ? options.cinemaNames.map((n) => String(n || '').trim()).filter(Boolean)
+    : [];
+  if (fromList.length) return [...new Set(fromList)];
+  const one = (options.cinemaName || config.cinemaName || '').trim();
+  return one ? [one] : ['Broadway Cinemas'];
+}
+
+function closedForCinemas(isoDate, target, finalUrl, redirectedTo, reason, cinemaNames) {
+  return cinemaNames.map((cinemaName) =>
+    closedResult(isoDate, target, finalUrl, redirectedTo, reason, cinemaName),
+  );
+}
+
+async function softWaitForPage(page, cinemaName = 'Broadway') {
+  const cinema = (cinemaName || 'Broadway').split(/\s+/)[0] || 'Broadway';
   await Promise.race([
-    page.waitForSelector('text=Broadway', { timeout: 18_000 }).catch(() => null),
+    page.waitForSelector(`text=${cinema}`, { timeout: 18_000 }).catch(() => null),
     page.waitForSelector('text=/\\d{1,2}:\\d{2}\\s*(AM|PM)/i', { timeout: 18_000 }).catch(() => null),
     page.waitForSelector('text=/No [Ss]hows|Select a Date|Book tickets/i', { timeout: 18_000 }).catch(() => null),
     page.waitForTimeout(18_000),
@@ -89,12 +105,110 @@ async function softWaitForPage(page) {
 }
 
 /**
- * redirect away → NOT OPEN
- * stay on date + booking UI loaded → OPEN
- * stay but page blocked/empty → soft failure (retry next loop), not OPEN
+ * Inspect BMS date strip: selected date + whether target is greyed out.
+ * Greyed dates are NOT OPEN even if the URL still contains that date.
  */
-export async function checkDateBooking(isoDate, browser) {
+async function inspectDateStrip(page, target) {
+  return page.evaluate(({ weekday, dayNum, month, label }) => {
+    const normalize = (t) => (t || '').replace(/\s+/g, ' ').trim().toUpperCase();
+    const labelNorm = normalize(label);
+    const isDatePillText = (text) => {
+      if (!text || text.length < 5 || text.length > 28) return false;
+      return (
+        /^[A-Z]{3}\s+\d{1,2}\s+[A-Z]{3}$/.test(text) ||
+        new RegExp(`^${weekday}\\s*${dayNum}\\s*${month}$`, 'i').test(text)
+      );
+    };
+    const matchesTarget = (text) => {
+      const n = normalize(text);
+      return (
+        n === labelNorm ||
+        (n.includes(weekday) && n.includes(String(dayNum)) && n.includes(month))
+      );
+    };
+
+    const nodes = [...document.querySelectorAll('li, button, a, div[role="button"], div, span')];
+    const pills = [];
+
+    for (const el of nodes) {
+      let text = '';
+      try {
+        text = normalize(el.innerText);
+      } catch {
+        continue;
+      }
+      if (!isDatePillText(text)) continue;
+
+      const style = window.getComputedStyle(el);
+      const rgb = style.color.match(/\d+/g)?.map(Number) || [0, 0, 0];
+      const opacity = Number(style.opacity || 1);
+      const bg = style.backgroundColor || '';
+      const cls = `${el.className || ''} ${el.parentElement?.className || ''}`.toLowerCase();
+      const ariaDisabled =
+        el.getAttribute('aria-disabled') === 'true' ||
+        el.closest('[aria-disabled="true"]') != null;
+      const ariaSelected =
+        el.getAttribute('aria-selected') === 'true' ||
+        el.closest('[aria-selected="true"]') != null;
+      const disabledAttr = !!(el.disabled || el.getAttribute('disabled') != null);
+
+      const greyText =
+        opacity < 0.85 ||
+        (rgb[0] > 140 && rgb[1] > 140 && rgb[2] > 140 && Math.max(...rgb) - Math.min(...rgb) < 40);
+      const disabledClass = /disabled|inactive|unavailable|mute|dim/.test(cls);
+      const pointerNone = style.pointerEvents === 'none';
+
+      const redish =
+        (rgb[0] > 160 && rgb[0] > rgb[1] + 40 && rgb[0] > rgb[2] + 40) ||
+        /rgb\(\s*2\d{2}\s*,\s*[0-8]\d\s*,\s*[0-8]\d/.test(bg);
+      const selectedClass = /select|active|current|chosen|picked/.test(cls);
+
+      pills.push({
+        text,
+        target: matchesTarget(text),
+        disabled: !!(ariaDisabled || disabledAttr || disabledClass || pointerNone || greyText),
+        selected: !!(ariaSelected || selectedClass || redish),
+      });
+    }
+
+    const byText = new Map();
+    for (const p of pills) {
+      const prev = byText.get(p.text);
+      if (!prev) {
+        byText.set(p.text, p);
+        continue;
+      }
+      byText.set(p.text, {
+        ...prev,
+        disabled: prev.disabled || p.disabled,
+        selected: prev.selected || p.selected,
+        target: prev.target || p.target,
+      });
+    }
+
+    const all = [...byText.values()];
+    const targetPill = all.find((p) => p.target) || null;
+    const selectedPill = all.find((p) => p.selected) || null;
+
+    return {
+      pills: all.slice(0, 14),
+      targetFound: !!targetPill,
+      targetDisabled: targetPill ? !!targetPill.disabled : null,
+      targetSelected: targetPill ? !!targetPill.selected : false,
+      selectedLabel: selectedPill?.text || null,
+    };
+  }, target);
+}
+
+/**
+ * redirect away → NOT OPEN
+ * greyed / not selected in date strip → NOT OPEN (even if URL stays)
+ * stay on date + strip selected → OPEN
+ */
+export async function checkDateBooking(isoDate, browser, options = {}) {
   const target = targetDateParts(isoDate);
+  const cinemaNames = resolveCinemaNames(options);
+  const bmsUrl = options.bmsUrl || config.bmsUrl;
   const ownBrowser = !browser;
   const browserInstance = browser || (await launchBrowser());
 
@@ -117,15 +231,15 @@ export async function checkDateBooking(isoDate, browser) {
     const page = await context.newPage();
     page.setDefaultTimeout(30_000);
 
-    const startUrl = buildBmsUrl(isoDate);
-    console.log(`[check] ${target.label} → ${startUrl}`);
+    const startUrl = buildBmsUrl(isoDate, bmsUrl);
+    console.log(`[check] ${target.label} → ${startUrl} | theatres=${cinemaNames.join(' | ')}`);
 
     const response = await page.goto(startUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 45_000,
     });
     await dismissPopups(page);
-    await softWaitForPage(page);
+    await softWaitForPage(page, cinemaNames[0]);
     await dismissPopups(page);
     await page.waitForTimeout(1500);
 
@@ -135,50 +249,122 @@ export async function checkDateBooking(isoDate, browser) {
     if (pageCompact && pageCompact !== target.compact) {
       console.log(`[check] ${target.label}: NOT OPEN (redirect ${target.compact} → ${pageCompact})`);
       await context.close();
-      return closedResult(
+      return closedForCinemas(
         isoDate,
         target,
         finalUrl,
         pageCompact,
         `Not open (BMS redirected to ${pageCompact})`,
+        cinemaNames,
       );
     }
 
-    await trySelectDate(page, target);
-    await page.waitForTimeout(1200);
-    finalUrl = page.url();
-    pageCompact = urlDateCompact(finalUrl);
+    let strip = await inspectDateStrip(page, target);
+    if (strip.targetFound && strip.targetDisabled) {
+      console.log(
+        `[check] ${target.label}: NOT OPEN (date greyed/disabled; selected=${strip.selectedLabel || 'n/a'})`,
+      );
+      await context.close();
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        'Not open (date still greyed out on BMS)',
+        cinemaNames,
+      );
+    }
+
+    if (strip.targetFound && !strip.targetDisabled) {
+      await trySelectDate(page, target);
+      await page.waitForTimeout(1200);
+      finalUrl = page.url();
+      pageCompact = urlDateCompact(finalUrl);
+      strip = await inspectDateStrip(page, target);
+    }
 
     if (pageCompact && pageCompact !== target.compact) {
       console.log(`[check] ${target.label}: NOT OPEN (moved to ${pageCompact})`);
       await context.close();
-      return closedResult(
+      return closedForCinemas(
         isoDate,
         target,
         finalUrl,
         pageCompact,
         `Not open (BMS redirected to ${pageCompact})`,
+        cinemaNames,
       );
     }
 
-    const snapshot = await page.evaluate(({ cinemaName }) => {
-      const bodyText = document.body?.innerText || '';
-      const lower = bodyText.toLowerCase();
-      const timeRe = /\b([01]?\d|2[0-3]):[0-5]\d\s?(AM|PM)\b/gi;
+    if (strip.targetFound && strip.targetDisabled) {
+      console.log(`[check] ${target.label}: NOT OPEN (still greyed after click)`);
+      await context.close();
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        'Not open (date still greyed out on BMS)',
+        cinemaNames,
+      );
+    }
 
-      let shows = [];
-      for (const el of document.querySelectorAll('a, div, section, li, article')) {
-        const t = (el.innerText || '').trim();
-        if (!t || t.length > 1200) continue;
-        if (!t.toLowerCase().includes(cinemaName.toLowerCase())) continue;
-        const local = [...t.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim());
-        if (local.length) {
-          shows = [...new Set(local)];
-          break;
+    const selectedOther =
+      strip.targetFound &&
+      !strip.targetSelected &&
+      strip.selectedLabel &&
+      strip.selectedLabel.replace(/\s+/g, ' ').trim().toUpperCase() !==
+        target.label.replace(/\s+/g, ' ').trim().toUpperCase();
+    if (selectedOther) {
+      console.log(`[check] ${target.label}: NOT OPEN (strip still on ${strip.selectedLabel})`);
+      await context.close();
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        `Not open (BMS still on ${strip.selectedLabel})`,
+        cinemaNames,
+      );
+    }
+
+    // Soft-land / false OPEN guard: if we cannot see this date in the strip,
+    // do not scrape leftover showtimes from another day.
+    if (!strip.targetFound) {
+      console.log(`[check] ${target.label}: NOT OPEN (date strip not confirmed)`);
+      await context.close();
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        'Not open (date strip not confirmed)',
+        cinemaNames,
+      );
+    }
+
+    const snapshot = await page.evaluate(({ cinemaNames: names }) => {
+      const bodyText = document.body?.innerText || '';
+      const timeRe = /\b([01]?\d|2[0-3]):[0-5]\d\s?(AM|PM)\b/gi;
+      const byCinema = {};
+
+      for (const cinemaName of names) {
+        let shows = [];
+        const needle = cinemaName.toLowerCase();
+        for (const el of document.querySelectorAll('a, div, section, li, article')) {
+          const t = (el.innerText || '').trim();
+          if (!t || t.length > 1200) continue;
+          if (!t.toLowerCase().includes(needle)) continue;
+          const local = [...t.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim());
+          if (local.length) {
+            shows = [...new Set(local)];
+            break;
+          }
         }
-      }
-      if (!shows.length && lower.includes(cinemaName.toLowerCase())) {
-        shows = [...new Set([...bodyText.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim()))];
+        byCinema[cinemaName] = {
+          shows,
+          found: bodyText.toLowerCase().includes(needle),
+        };
       }
 
       const blocked =
@@ -187,106 +373,74 @@ export async function checkDateBooking(isoDate, browser) {
           bodyText,
         );
 
-      const hasBookingUi =
-        lower.includes(cinemaName.toLowerCase()) ||
-        shows.length > 0 ||
-        /no shows|select a date|showtimes|book tickets|venues?/i.test(bodyText);
-
-      return {
-        shows,
-        blocked,
-        hasBookingUi,
-        bodyLen: bodyText.length,
-        preview: bodyText.slice(0, 160).replace(/\s+/g, ' '),
-      };
-    }, { cinemaName: config.cinemaName });
+      return { byCinema, blocked, bodyLen: bodyText.length };
+    }, { cinemaNames });
 
     const status = response?.status?.() ?? 0;
     if (snapshot.blocked || (status >= 400 && status !== 404)) {
-      console.log(
-        `[check] ${target.label}: page not ready (status=${status}, bodyLen=${snapshot.bodyLen}) ${snapshot.preview}`,
+      console.log(`[check] ${target.label}: page not ready (status=${status})`);
+      await context.close();
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        'BMS page did not load (will retry)',
+        cinemaNames,
       );
-      await context.close();
-      return {
-        date: isoDate,
-        label: target.label,
-        listed: false,
-        open: false,
-        shows: [],
-        newShows: [],
-        pageUrl: finalUrl,
-        redirectedTo: null,
-        checkedAt: new Date().toISOString(),
-        error: null,
-        reason: 'BMS page did not load (will retry)',
-      };
     }
-
-    // URL stayed on target date and booking UI is present → OPEN
-    if (!snapshot.hasBookingUi) {
-      console.log(`[check] ${target.label}: URL ok but booking UI missing — retry later`);
-      await context.close();
-      return {
-        date: isoDate,
-        label: target.label,
-        listed: false,
-        open: false,
-        shows: [],
-        newShows: [],
-        pageUrl: finalUrl,
-        redirectedTo: null,
-        checkedAt: new Date().toISOString(),
-        error: null,
-        reason: 'Booking UI not loaded yet (will retry)',
-      };
-    }
-
-    console.log(
-      `[check] ${target.label}: OPEN` +
-        (snapshot.shows.length ? ` → ${snapshot.shows.join(', ')}` : ' (showtimes pending parse)'),
-    );
 
     await context.close();
 
-    return {
-      date: isoDate,
-      label: target.label,
-      listed: true,
-      open: true,
-      shows: snapshot.shows,
-      newShows: [],
-      pageUrl: finalUrl,
-      redirectedTo: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-      reason: null,
-    };
+    return cinemaNames.map((cinemaName) => {
+      const entry = snapshot.byCinema?.[cinemaName] || { shows: [], found: false };
+      const listed = entry.shows.length > 0;
+      console.log(
+        `[check] ${target.label} · ${cinemaName}: ${listed ? 'OPEN' : 'NOT LISTED'}` +
+          (entry.shows.length ? ` → ${entry.shows.join(', ')}` : ''),
+      );
+      return {
+        date: isoDate,
+        label: target.label,
+        cinemaName,
+        listed,
+        open: listed,
+        shows: entry.shows,
+        newShows: [],
+        pageUrl: finalUrl,
+        redirectedTo: null,
+        checkedAt: new Date().toISOString(),
+        error: null,
+        reason: listed
+          ? null
+          : entry.found
+            ? 'Theatre found but no showtimes yet'
+            : 'Theatre not listed on this date yet',
+      };
+    });
   } catch (err) {
     console.log(`[check] ${target.label}: soft-fail → ${err.message || err}`);
-    return {
-      date: isoDate,
-      label: target.label,
-      listed: false,
-      open: false,
-      shows: [],
-      newShows: [],
-      pageUrl: buildBmsUrl(isoDate),
-      redirectedTo: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-      reason: `Check failed (will retry): ${err.message || err}`,
-    };
+    return closedForCinemas(
+      isoDate,
+      target,
+      buildBmsUrl(isoDate, bmsUrl),
+      null,
+      `Check failed (will retry): ${err.message || err}`,
+      cinemaNames,
+    );
   } finally {
     if (ownBrowser) await browserInstance.close();
   }
 }
 
-export async function checkAllDates(dates = config.targetDates) {
+export async function checkAllDates(dates = config.targetDates, options = {}) {
   const browser = await launchBrowser();
   try {
     const results = [];
     for (const iso of dates) {
-      results.push(await checkDateBooking(iso, browser));
+      const one = await checkDateBooking(iso, browser, options);
+      if (Array.isArray(one)) results.push(...one);
+      else results.push(one);
     }
     return results;
   } finally {

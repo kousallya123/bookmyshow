@@ -23,13 +23,21 @@ function parseDates() {
   return [...new Set(list)].sort();
 }
 
-function normalizeDate(value) {
-  const digits = value.replace(/\D/g, '');
+export function normalizeDateInput(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const digits = raw.replace(/\D/g, '');
   if (/^\d{8}$/.test(digits)) {
     return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
   }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   throw new Error(`Invalid date "${value}". Use YYYY-MM-DD or YYYYMMDD.`);
+}
+
+function normalizeDate(value) {
+  const out = normalizeDateInput(value);
+  if (!out) throw new Error(`Invalid date "${value}". Use YYYY-MM-DD or YYYYMMDD.`);
+  return out;
 }
 
 export function toCompactDate(isoDate) {
@@ -80,4 +88,6 @@ export const config = {
   dashboardPort: Number(process.env.PORT || process.env.DASHBOARD_PORT || 3847),
   reportUrl: (process.env.REPORT_URL || '').replace(/\/$/, ''),
   ingestSecret: process.env.INGEST_SECRET || '',
+  mongoUri: (process.env.MONGODB_URI || process.env.MONGO_URL || '').trim(),
+  mongoDbName: (process.env.MONGODB_DB || 'bms_monitor').trim() || 'bms_monitor',
 };

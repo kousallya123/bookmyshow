@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ramayana · BookMyShow monitor</title>
+    <title>BMS · BookMyShow monitor</title>
     <meta name="theme-color" content="#ff2e63" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -399,13 +399,87 @@
         margin-bottom: 0.9rem;
         display: none;
       }
+
+      .settings {
+        margin-bottom: 1.25rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: linear-gradient(180deg, var(--panel-2), var(--panel));
+        padding: 1rem 1.05rem 1.1rem;
+      }
+      .settings h2 {
+        margin: 0 0 0.85rem;
+        font-size: 0.92rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.75rem;
+      }
+      .field { display: flex; flex-direction: column; gap: 0.35rem; }
+      .field label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .field input, .field textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+        color: var(--text);
+        font: inherit;
+        padding: 0.55rem 0.7rem;
+      }
+      .field textarea { min-height: 64px; resize: vertical; }
+      .field.span-2 { grid-column: 1 / -1; }
+      .date-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+        margin-top: 0.85rem;
+      }
+      .date-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.55rem 0.7rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .date-row label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+      }
+      .settings-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        margin-top: 0.9rem;
+        align-items: center;
+      }
+      .storage-pill {
+        margin-left: auto;
+        font-size: 0.75rem;
+        color: var(--muted);
+        font-family: "IBM Plex Mono", monospace;
+      }
     </style>
   </head>
   <body>
     <header>
       <div class="brand">
-        <h1>Ramayana <em>monitor</em></h1>
-        <div class="meta" id="subtitle">Broadway Cinemas · Coimbatore</div>
+        <h1>BMS <em>monitor</em></h1>
+        <div class="meta" id="subtitle">Set movie · theatre · dates</div>
       </div>
       <div class="controls">
         <label class="sound-toggle">
@@ -421,6 +495,50 @@
 
     <main>
       <div id="statusError"></div>
+
+      <section class="settings" id="settings">
+        <h2>Monitor settings</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="movieName">Movie name</label>
+            <input id="movieName" type="text" placeholder="Ramayana (Tamil)" />
+          </div>
+          <div class="field">
+            <label for="city">City</label>
+            <input id="city" type="text" placeholder="Coimbatore" />
+          </div>
+          <div class="field">
+            <label for="formatHint">Format hint</label>
+            <input id="formatHint" type="text" placeholder="IMAX" />
+          </div>
+          <div class="field span-2">
+            <label for="bmsUrl">BookMyShow buytickets URL</label>
+            <textarea id="bmsUrl" placeholder="Paste any date’s BMS buytickets link"></textarea>
+          </div>
+          <div class="field">
+            <label for="newCinema">Add theatre (exact BMS name)</label>
+            <input id="newCinema" type="text" placeholder="Broadway Cinemas" />
+          </div>
+          <div class="field">
+            <label for="newDate">Add date (YYYY-MM-DD)</label>
+            <input id="newDate" type="date" />
+          </div>
+          <div class="field" style="justify-content:flex-end">
+            <label class="sound-toggle" style="width:fit-content;margin-top:1.4rem">
+              <input type="checkbox" id="notificationsEnabled" checked />
+              Notifications on
+            </label>
+          </div>
+        </div>
+        <div class="date-list" id="cinemaList"></div>
+        <div class="date-list" id="dateList"></div>
+        <div class="settings-actions">
+          <button type="button" class="ghost" id="addCinemaBtn">Add theatre</button>
+          <button type="button" class="ghost" id="addDateBtn">Add date</button>
+          <button type="button" class="primary" id="saveMonitor">Save settings</button>
+          <span class="storage-pill" id="storagePill"></span>
+        </div>
+      </section>
 
       <div class="status-bar">
         <div class="live-pill" id="livePill">
@@ -441,9 +559,9 @@
       <div class="grid" id="cards"></div>
 
       <footer>
-        Redirect = not open · Stay on date = open.
-        On phone: tap <strong>Enable phone alerts</strong>, allow notifications, then Add to Home Screen (iPhone: Share → Add to Home Screen).
-        Keepalive tip: ping <span class="mono">/api/health</span> every 10 min so free hosts don’t sleep.
+        Enable the dates you care about, set theatre name exactly as on BMS, paste the movie buytickets URL.
+        Redirect / greyed date = not open. Phone alerts: tap <strong>Enable phone alerts</strong>.
+        Optional: set <span class="mono">MONGODB_URI</span> to persist settings in MongoDB (otherwise <span class="mono">data/monitor.json</span>).
       </footer>
     </main>
 
@@ -458,12 +576,200 @@
       const livePill = document.getElementById('livePill');
       const liveText = document.getElementById('liveText');
       const enablePushBtn = document.getElementById('enablePush');
+      const dateListEl = document.getElementById('dateList');
+      const storagePill = document.getElementById('storagePill');
 
       let audioCtx = null;
       let soundTimer = null;
       let soundKey = '';
+      let monitorState = {
+        movieName: '',
+        cinemaName: '',
+        cinemas: [],
+        city: '',
+        formatHint: '',
+        bmsUrl: '',
+        notificationsEnabled: true,
+        dates: [],
+      };
       const browserNotified = new Set();
       const vibratedFor = new Set();
+
+      function escapeHtml(s) {
+        return String(s || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      const cinemaListEl = document.getElementById('cinemaList');
+
+      function fillMonitorForm(m) {
+        const cinemas = Array.isArray(m.cinemas) && m.cinemas.length
+          ? m.cinemas.map((c) => ({ name: c.name, enabled: c.enabled !== false }))
+          : m.cinemaName
+            ? [{ name: m.cinemaName, enabled: true }]
+            : [];
+        monitorState = {
+          movieName: m.movieName || '',
+          cinemaName: m.cinemaName || cinemas[0]?.name || '',
+          cinemas,
+          city: m.city || '',
+          formatHint: m.formatHint || '',
+          bmsUrl: m.bmsUrl || '',
+          notificationsEnabled: m.notificationsEnabled !== false,
+          dates: Array.isArray(m.dates) ? m.dates.map((d) => ({ ...d })) : [],
+          storage: m.storage || 'file',
+        };
+        document.getElementById('movieName').value = monitorState.movieName;
+        document.getElementById('city').value = monitorState.city;
+        document.getElementById('formatHint').value = monitorState.formatHint;
+        document.getElementById('bmsUrl').value = monitorState.bmsUrl;
+        document.getElementById('notificationsEnabled').checked = monitorState.notificationsEnabled;
+        storagePill.textContent = `storage: ${monitorState.storage}`;
+        renderCinemaList();
+        renderDateList();
+      }
+
+      function renderCinemaList() {
+        if (!monitorState.cinemas.length) {
+          cinemaListEl.innerHTML = '<p class="empty">No theatres yet — add one above (use exact BMS name).</p>';
+          return;
+        }
+        cinemaListEl.innerHTML =
+          `<div class="meta" style="margin-bottom:0.35rem">Theatres (enable several at once)</div>` +
+          monitorState.cinemas
+            .map(
+              (c, i) => `
+            <div class="date-row">
+              <label>
+                <input type="checkbox" data-cinema-idx="${i}" ${c.enabled !== false ? 'checked' : ''} />
+                <span><strong>${escapeHtml(c.name)}</strong></span>
+              </label>
+              <button type="button" class="danger-soft" style="padding:0.3rem 0.65rem;font-size:0.75rem" data-remove-cinema="${i}">Remove</button>
+            </div>`,
+            )
+            .join('');
+
+        cinemaListEl.querySelectorAll('[data-cinema-idx]').forEach((el) => {
+          el.onchange = () => {
+            const idx = Number(el.getAttribute('data-cinema-idx'));
+            monitorState.cinemas[idx].enabled = el.checked;
+          };
+        });
+        cinemaListEl.querySelectorAll('[data-remove-cinema]').forEach((btn) => {
+          btn.onclick = () => {
+            const idx = Number(btn.getAttribute('data-remove-cinema'));
+            monitorState.cinemas.splice(idx, 1);
+            renderCinemaList();
+          };
+        });
+      }
+
+      function renderDateList() {
+        if (!monitorState.dates.length) {
+          dateListEl.innerHTML = '<p class="empty">No dates yet — add one above.</p>';
+          return;
+        }
+        dateListEl.innerHTML =
+          `<div class="meta" style="margin-bottom:0.35rem">Dates</div>` +
+          monitorState.dates
+            .map(
+              (d, i) => `
+            <div class="date-row">
+              <label>
+                <input type="checkbox" data-date-idx="${i}" ${d.enabled !== false ? 'checked' : ''} />
+                <span><strong>${escapeHtml(d.label || d.date)}</strong>
+                <span class="meta mono"> · ${escapeHtml(d.date)}</span></span>
+              </label>
+              <button type="button" class="danger-soft" style="padding:0.3rem 0.65rem;font-size:0.75rem" data-remove-date="${i}">Remove</button>
+            </div>`,
+            )
+            .join('');
+
+        dateListEl.querySelectorAll('[data-date-idx]').forEach((el) => {
+          el.onchange = () => {
+            const idx = Number(el.getAttribute('data-date-idx'));
+            monitorState.dates[idx].enabled = el.checked;
+          };
+        });
+        dateListEl.querySelectorAll('[data-remove-date]').forEach((btn) => {
+          btn.onclick = () => {
+            const idx = Number(btn.getAttribute('data-remove-date'));
+            monitorState.dates.splice(idx, 1);
+            renderDateList();
+          };
+        });
+      }
+
+      document.getElementById('addCinemaBtn').onclick = () => {
+        const raw = document.getElementById('newCinema').value.trim();
+        if (!raw) return alert('Enter theatre name exactly as on BookMyShow');
+        if (monitorState.cinemas.some((c) => c.name.toLowerCase() === raw.toLowerCase())) {
+          return alert('Theatre already added');
+        }
+        monitorState.cinemas.push({ name: raw, enabled: true });
+        document.getElementById('newCinema').value = '';
+        renderCinemaList();
+      };
+
+      document.getElementById('addDateBtn').onclick = () => {
+        const raw = document.getElementById('newDate').value;
+        if (!raw) return alert('Pick a date first');
+        if (monitorState.dates.some((d) => d.date === raw)) return alert('Date already added');
+        const dt = new Date(`${raw}T00:00:00Z`);
+        const weekdays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+        const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+        monitorState.dates.push({
+          date: raw,
+          enabled: true,
+          label: `${weekdays[dt.getUTCDay()]} ${dt.getUTCDate()} ${months[dt.getUTCMonth()]}`,
+        });
+        monitorState.dates.sort((a, b) => a.date.localeCompare(b.date));
+        document.getElementById('newDate').value = '';
+        renderDateList();
+      };
+
+      document.getElementById('saveMonitor').onclick = async () => {
+        const enabledCinemas = monitorState.cinemas.filter((c) => c.enabled !== false);
+        const payload = {
+          movieName: document.getElementById('movieName').value.trim(),
+          city: document.getElementById('city').value.trim(),
+          formatHint: document.getElementById('formatHint').value.trim(),
+          bmsUrl: document.getElementById('bmsUrl').value.trim(),
+          notificationsEnabled: document.getElementById('notificationsEnabled').checked,
+          cinemas: monitorState.cinemas,
+          cinemaName: enabledCinemas[0]?.name || monitorState.cinemas[0]?.name || '',
+          dates: monitorState.dates,
+        };
+        if (!payload.movieName || !payload.bmsUrl || !payload.cinemas.length) {
+          alert('Movie, BMS URL, and at least one theatre are required');
+          return;
+        }
+        const res = await fetch('/api/monitor', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Save failed');
+          return;
+        }
+        fillMonitorForm(data.monitor);
+        alert('Settings saved. Next check will use them.');
+        poll();
+      };
+
+      async function loadMonitor() {
+        try {
+          const res = await fetch('/api/monitor', { cache: 'no-store' });
+          fillMonitorForm(await res.json());
+        } catch (_) {
+          /* ignore */
+        }
+      }
 
       function urlBase64ToUint8Array(base64String) {
         const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -552,11 +858,11 @@
         }, 4000);
       }
 
-      async function dismissAlert(date) {
+      async function dismissAlert(date, cinemaName) {
         await fetch('/api/dismiss-alert', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(date ? { date } : {}),
+                  headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(date ? { date, cinemaName: cinemaName || undefined } : {}),
         });
         poll();
       }
@@ -570,14 +876,6 @@
         playAlertTone();
       };
       document.getElementById('turnOffAll').onclick = () => dismissAlert(null);
-
-      function escapeHtml(s) {
-        return String(s || '')
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
-      }
 
       function renderAlerts(activeAlerts) {
         if (!activeAlerts.length) {
@@ -611,7 +909,7 @@
                   <div>
                     <div class="alert-kicker"><span class="pulse"></span> Booking alert</div>
                     <h3 class="alert-title">${escapeHtml(a.label || a.date)}</h3>
-                    <p class="alert-sub">Ramayana (Tamil) · Broadway Cinemas · Coimbatore</p>
+                    <p class="alert-sub">${escapeHtml(monitorState.movieName || 'Movie')} · ${escapeHtml(a.cinemaName || monitorState.cinemaName || 'Theatre')}${monitorState.city ? ` · ${escapeHtml(monitorState.city)}` : ''}</p>
                   </div>
                   <span class="alert-kind ${isNew ? 'new' : ''}">${
                     isNew ? 'New showtimes' : 'Now open'
@@ -622,16 +920,15 @@
                   <a href="${escapeHtml(a.pageUrl || '#')}" target="_blank" rel="noreferrer">
                     <button type="button" class="primary">Book on BookMyShow</button>
                   </a>
-                  <button type="button" class="danger-soft" data-dismiss="${escapeHtml(
-                    a.date,
-                  )}">Mute this date</button>
+                  <button type="button" class="danger-soft" data-dismiss="${escapeHtml(a.date)}" data-cinema="${escapeHtml(a.cinemaName || '')}">Mute this alert</button>
                 </div>
               </article>`;
           })
           .join('');
 
         alertsEl.querySelectorAll('[data-dismiss]').forEach((btn) => {
-          btn.onclick = () => dismissAlert(btn.getAttribute('data-dismiss'));
+          btn.onclick = () =>
+            dismissAlert(btn.getAttribute('data-dismiss'), btn.getAttribute('data-cinema') || null);
         });
       }
 
@@ -641,7 +938,15 @@
           : status.source === 'render-tls'
             ? 'cloud monitor'
             : status.source || 'idle';
-        subtitle.textContent = `${status.cinemaName || 'Broadway Cinemas'} · Coimbatore · ${src}`;
+        const m = status.monitor || monitorState;
+        if (status.monitor) fillMonitorForm(status.monitor);
+        const theatreNames = (m.cinemas || [])
+          .filter((c) => c.enabled !== false)
+          .map((c) => c.name);
+        const theatreLabel = theatreNames.length
+          ? theatreNames.join(' · ')
+          : m.cinemaName || 'Theatre';
+        subtitle.textContent = `${m.movieName || 'Movie'} · ${theatreLabel}${m.city ? ` · ${m.city}` : ''} · ${src}`;
 
         const statusError = document.getElementById('statusError');
         if (status.error) {
@@ -693,9 +998,11 @@
           }
         }
 
-        const alertDates = new Set(activeAlerts.map((a) => a.date));
+        const alertKeys = new Set(
+          activeAlerts.map((a) => `${a.date}::${a.cinemaName || ''}`),
+        );
         const dates = [...(status.dates || [])].sort((a, b) =>
-          String(a.date || '').localeCompare(String(b.date || '')),
+          `${a.date}:${a.cinemaName || ''}`.localeCompare(`${b.date}:${b.cinemaName || ''}`),
         );
         if (!dates.length) {
           cards.innerHTML = '<div class="card"><p class="empty">No dates configured yet.</p></div>';
@@ -705,7 +1012,7 @@
         cards.innerHTML = dates
           .map((d) => {
             const isOpen = d.listed || d.open;
-            const alerting = alertDates.has(d.date);
+            const alerting = alertKeys.has(`${d.date}::${d.cinemaName || ''}`);
             const badge = d.error
               ? '<span class="badge error">Error</span>'
               : alerting
@@ -733,7 +1040,7 @@
             const dismissBtn = alerting
               ? `<button type="button" class="danger-soft" style="padding:0.35rem 0.7rem;font-size:0.78rem" data-card-dismiss="${escapeHtml(
                   d.date,
-                )}">Mute</button>`
+                )}" data-card-cinema="${escapeHtml(d.cinemaName || '')}">Mute</button>`
               : '';
 
             return `
@@ -741,7 +1048,8 @@
                 <div class="row">
                   <div>
                     <strong style="font-size:1.05rem">${escapeHtml(d.label || d.date)}</strong>
-                    <div class="meta mono" style="margin-top:0.2rem">${escapeHtml(d.date)}</div>
+                    <div class="meta" style="margin-top:0.2rem">${escapeHtml(d.cinemaName || monitorState.cinemaName || 'Theatre')}</div>
+                    <div class="meta mono" style="margin-top:0.15rem">${escapeHtml(d.date)}</div>
                   </div>
                   <div class="row" style="gap:0.4rem">${badge}${dismissBtn}</div>
                 </div>
@@ -754,7 +1062,11 @@
           .join('');
 
         cards.querySelectorAll('[data-card-dismiss]').forEach((btn) => {
-          btn.onclick = () => dismissAlert(btn.getAttribute('data-card-dismiss'));
+          btn.onclick = () =>
+            dismissAlert(
+              btn.getAttribute('data-card-dismiss'),
+              btn.getAttribute('data-card-cinema') || null,
+            );
         });
       }
 
@@ -771,7 +1083,7 @@
         Notification.requestPermission().catch(() => {});
       }
 
-      poll();
+      loadMonitor().then(poll);
       setInterval(poll, 3000);
     </script>
   </body>

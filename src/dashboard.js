@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { readStatus, writeStatus } from './statusStore.js';
 import { getVapidPublicKey, saveSubscription, removeSubscription } from './push.js';
 import { processCheckResults } from './processResults.js';
+import { getMonitor, saveMonitor } from './monitorStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -110,7 +111,36 @@ export function startDashboard() {
     if (url.pathname === '/api/status') {
       const status = readStatus();
       status.alerts = normalizeAlerts(status).filter((a) => a?.active && !a?.dismissed);
+      status.monitor = status.monitor || (await getMonitor());
       json(res, 200, status);
+      return;
+    }
+
+    if (url.pathname === '/api/monitor' && req.method === 'GET') {
+      json(res, 200, await getMonitor(true));
+      return;
+    }
+
+    if (url.pathname === '/api/monitor' && req.method === 'PUT') {
+      const body = await readBody(req);
+      try {
+        const saved = await saveMonitor(body);
+        const prev = readStatus();
+        writeStatus({
+          ...prev,
+          movieName: saved.movieName,
+          cinemaName: saved.cinemaName,
+          city: saved.city,
+          formatHint: saved.formatHint,
+          notificationsEnabled: saved.notificationsEnabled !== false,
+          bmsUrl: saved.bmsUrl,
+          targetDates: saved.dates.filter((d) => d.enabled !== false).map((d) => d.date),
+          monitor: saved,
+        });
+        json(res, 200, { ok: true, monitor: saved });
+      } catch (err) {
+        json(res, 400, { ok: false, error: err.message || String(err) });
+      }
       return;
     }
 
@@ -119,10 +149,12 @@ export function startDashboard() {
       const status = readStatus();
       const alerts = normalizeAlerts(status);
       const date = body.date || null;
+      const cinemaName = body.cinemaName || null;
 
       const next = alerts.map((a) => {
-        const match = date ? a.date === date : true;
-        if (!match) return a;
+        const matchDate = date ? a.date === date : true;
+        const matchCinema = cinemaName ? a.cinemaName === cinemaName : true;
+        if (!(matchDate && matchCinema)) return a;
         return {
           ...a,
           active: false,

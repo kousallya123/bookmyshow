@@ -51,10 +51,55 @@ function urlDateCompact(url) {
 }
 
 function parseShows(html, cinemaName) {
-  const showTimes = [...html.matchAll(/"showTime"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
-  const unique = [...new Set(showTimes)];
-  const hasCinema = new RegExp(cinemaName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(html);
-  return { shows: unique, hasCinema };
+  const by = parseShowsForCinemas(html, [cinemaName]);
+  const entry = by[cinemaName] || { shows: [], found: false };
+  return { shows: entry.shows, hasCinema: entry.found };
+}
+
+function parseShowsForCinemas(html, cinemaNames) {
+  const text = String(html || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ');
+  const timeRe = /\b([01]?\d|2[0-3]):[0-5]\d\s?(AM|PM)\b/gi;
+  const out = {};
+  for (const name of cinemaNames) {
+    const needle = name.toLowerCase();
+    const idx = text.toLowerCase().indexOf(needle);
+    if (idx < 0) {
+      out[name] = { shows: [], found: false };
+      continue;
+    }
+    const slice = text.slice(idx, idx + 2800);
+    const shows = [
+      ...new Set([...slice.matchAll(timeRe)].map((m) => m[0].replace(/\s+/g, ' ').trim())),
+    ];
+    out[name] = { shows, found: true };
+  }
+  return out;
+}
+
+function resolveCinemaNames(options = {}) {
+  const fromList = Array.isArray(options.cinemaNames)
+    ? options.cinemaNames.map((n) => String(n || '').trim()).filter(Boolean)
+    : [];
+  if (fromList.length) return [...new Set(fromList)];
+  const one = (options.cinemaName || config.cinemaName || '').trim();
+  return one ? [one] : ['Broadway Cinemas'];
+}
+
+function closedForCinemas(isoDate, target, finalUrl, redirectedTo, reason, cinemaNames) {
+  return cinemaNames.map((cinemaName) => ({
+    date: isoDate,
+    label: target.label,
+    cinemaName,
+    listed: false,
+    open: false,
+    shows: [],
+    newShows: [],
+    pageUrl: finalUrl,
+    redirectedTo,
+    checkedAt: new Date().toISOString(),
+    error: null,
+    reason,
+  }));
 }
 
 function isBlocked(status, html) {
@@ -133,10 +178,12 @@ async function fetchBms(url) {
  * Cloud-friendly BMS check (Safari TLS + profile rotation).
  * redirect away → NOT OPEN | stay on date → OPEN
  */
-export async function checkDateBooking(isoDate) {
+export async function checkDateBooking(isoDate, options = {}) {
   const target = targetDateParts(isoDate);
-  const startUrl = buildBmsUrl(isoDate);
-  console.log(`[check:tls] ${target.label} → ${startUrl}`);
+  const cinemaNames = resolveCinemaNames(options);
+  const bmsUrl = options.bmsUrl || config.bmsUrl;
+  const startUrl = buildBmsUrl(isoDate, bmsUrl);
+  console.log(`[check:tls] ${target.label} → ${startUrl} | theatres=${cinemaNames.join(' | ')}`);
 
   try {
     const result = await fetchBms(startUrl);
@@ -144,92 +191,106 @@ export async function checkDateBooking(isoDate) {
     const pageCompact = urlDateCompact(finalUrl);
 
     if (isBlocked(result.status, result.html)) {
-      return {
-        date: isoDate,
-        label: target.label,
-        listed: false,
-        open: false,
-        shows: [],
-        newShows: [],
-        pageUrl: finalUrl,
-        redirectedTo: null,
-        checkedAt: new Date().toISOString(),
-        error: null,
-        reason: `BMS blocked request (profiles tried: ${(result.errors || []).join(',') || 'all'})`,
-      };
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        `BMS blocked request (profiles tried: ${(result.errors || []).join(',') || 'all'})`,
+        cinemaNames,
+      );
     }
 
     if (pageCompact && pageCompact !== target.compact) {
       console.log(
         `[check:tls] ${target.label}: NOT OPEN (redirect ${target.compact} → ${pageCompact})`,
       );
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        pageCompact,
+        `Not open (BMS redirected to ${pageCompact})`,
+        cinemaNames,
+      );
+    }
+
+    const htmlHasTargetDate =
+      new RegExp(`"showDate"\\s*:\\s*"${target.compact}"`, 'i').test(result.html) ||
+      new RegExp(`"date"\\s*:\\s*"${target.compact}"`, 'i').test(result.html) ||
+      new RegExp(`/${target.compact}(?:\\?|"|'|\\s|<)`, 'i').test(result.html);
+
+    if (!htmlHasTargetDate) {
+      console.log(
+        `[check:tls] ${target.label}: NOT OPEN (URL stayed but page has no ${target.compact} show data)`,
+      );
+      return closedForCinemas(
+        isoDate,
+        target,
+        finalUrl,
+        null,
+        'Not open (page still serving another date)',
+        cinemaNames,
+      );
+    }
+
+    const byCinema = parseShowsForCinemas(result.html, cinemaNames);
+    return cinemaNames.map((cinemaName) => {
+      const entry = byCinema[cinemaName] || { shows: [], found: false };
+      const listed = entry.shows.length > 0;
+      console.log(
+        `[check:tls] ${target.label} · ${cinemaName}: ${listed ? 'OPEN' : 'NOT LISTED'}` +
+          (entry.shows.length ? ` → ${entry.shows.join(', ')}` : ''),
+      );
       return {
         date: isoDate,
         label: target.label,
-        listed: false,
-        open: false,
-        shows: [],
+        cinemaName,
+        listed,
+        open: listed,
+        shows: entry.shows,
         newShows: [],
         pageUrl: finalUrl,
-        redirectedTo: pageCompact,
+        redirectedTo: null,
         checkedAt: new Date().toISOString(),
         error: null,
-        reason: `Not open (BMS redirected to ${pageCompact})`,
+        reason: listed
+          ? null
+          : entry.found
+            ? 'Theatre found but no showtimes yet'
+            : 'Theatre not listed on this date yet',
       };
-    }
-
-    const { shows, hasCinema } = parseShows(result.html, config.cinemaName);
-    const listed = result.status >= 200 && result.status < 400;
-
-    console.log(
-      `[check:tls] ${target.label}: ${listed ? 'OPEN' : 'NOT OPEN'}` +
-        (shows.length ? ` → ${shows.join(', ')}` : hasCinema ? ' (cinema found)' : ''),
-    );
-
-    return {
-      date: isoDate,
-      label: target.label,
-      listed,
-      open: listed,
-      shows,
-      newShows: [],
-      pageUrl: finalUrl,
-      redirectedTo: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-      reason: listed ? null : `HTTP ${result.status}`,
-    };
+    });
   } catch (err) {
     console.log(`[check:tls] ${target.label}: soft-fail → ${err.message || err}`);
-    return {
-      date: isoDate,
-      label: target.label,
-      listed: false,
-      open: false,
-      shows: [],
-      newShows: [],
-      pageUrl: buildBmsUrl(isoDate),
-      redirectedTo: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-      reason: `Check failed (will retry): ${err.message || err}`,
-    };
+    return closedForCinemas(
+      isoDate,
+      target,
+      buildBmsUrl(isoDate, bmsUrl),
+      null,
+      `Check failed (will retry): ${err.message || err}`,
+      cinemaNames,
+    );
   }
 }
 
-export async function checkAllDates(dates = config.targetDates) {
+export async function checkAllDates(dates = config.targetDates, options = {}) {
   await ensureTls();
   const results = [];
   for (const iso of dates) {
-    results.push(await checkDateBooking(iso));
+    const one = await checkDateBooking(iso, options);
+    if (Array.isArray(one)) results.push(...one);
+    else results.push(one);
     await new Promise((r) => setTimeout(r, 500));
   }
   return results;
 }
 
 /** Used by /api/debug-bms so you can see what Render receives. */
-export async function debugBmsFetch(isoDate = config.targetDates[0]) {
-  const url = buildBmsUrl(isoDate);
+export async function debugBmsFetch(isoDate = config.targetDates[0], options = {}) {
+  const cinemaName = (options.cinemaName || config.cinemaName || '').trim();
+  const bmsUrl = options.bmsUrl || config.bmsUrl;
+  const url = buildBmsUrl(isoDate, bmsUrl);
   const result = await fetchBms(url);
   return {
     url,
@@ -240,8 +301,8 @@ export async function debugBmsFetch(isoDate = config.targetDates[0]) {
     length: result.html?.length || 0,
     blocked: isBlocked(result.status, result.html),
     compact: urlDateCompact(result.url || url),
-    broadway: /Broadway/i.test(result.html || ''),
-    shows: parseShows(result.html || '', config.cinemaName).shows.slice(0, 10),
+    cinema: new RegExp(cinemaName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(result.html || ''),
+    shows: parseShows(result.html || '', cinemaName).shows.slice(0, 10),
     preview: (result.html || '').slice(0, 240).replace(/\s+/g, ' '),
     errors: result.errors || [],
   };
