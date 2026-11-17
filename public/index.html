@@ -559,9 +559,10 @@
       <div class="grid" id="cards"></div>
 
       <footer>
-        Enable the dates you care about, set theatre name exactly as on BMS, paste the movie buytickets URL.
-        Redirect / greyed date = not open. Phone alerts: tap <strong>Enable phone alerts</strong>.
-        Optional: set <span class="mono">MONGODB_URI</span> to persist settings in MongoDB (otherwise <span class="mono">data/monitor.json</span>).
+        Enable dates + theatres, paste the BMS buytickets URL, then <strong>Save settings</strong>.
+        On Render, checks must come from a <strong>local worker</strong> (cloud IPs get Cloudflare 403).
+        Run locally: <span class="mono">ROLE=worker CHECK_MODE=playwright npm start</span> with matching <span class="mono">INGEST_SECRET</span>.
+        Phone alerts: tap <strong>Enable phone alerts</strong>.
       </footer>
     </main>
 
@@ -935,9 +936,13 @@
       function render(status) {
         const src = status.checking
           ? 'checking…'
-          : status.source === 'render-tls'
-            ? 'cloud monitor'
-            : status.source || 'idle';
+          : status.source === 'worker'
+            ? 'local worker'
+            : status.source === 'waiting-worker'
+              ? 'waiting for local worker'
+              : status.source === 'render-tls'
+                ? 'cloud (often blocked)'
+                : status.source || 'idle';
         const m = status.monitor || monitorState;
         if (status.monitor) fillMonitorForm(status.monitor);
         const theatreNames = (m.cinemas || [])
@@ -949,9 +954,16 @@
         subtitle.textContent = `${m.movieName || 'Movie'} · ${theatreLabel}${m.city ? ` · ${m.city}` : ''} · ${src}`;
 
         const statusError = document.getElementById('statusError');
+        const blocked =
+          (status.dates || []).some((d) => /blocked request|403/i.test(d.reason || '')) ||
+          status.source === 'waiting-worker';
         if (status.error) {
           statusError.style.display = 'block';
           statusError.textContent = `Check error: ${status.error}`;
+        } else if (blocked && status.source !== 'worker') {
+          statusError.style.display = 'block';
+          statusError.textContent =
+            'Render cannot reach BookMyShow (Cloudflare 403). Keep this site for alerts/settings, and run a local worker: ROLE=worker CHECK_MODE=playwright with REPORT_URL + matching INGEST_SECRET.';
         } else {
           statusError.style.display = 'none';
           statusError.textContent = '';

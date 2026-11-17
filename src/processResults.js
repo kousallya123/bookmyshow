@@ -151,7 +151,9 @@ export async function processCheckResults(results, { source = 'local' } = {}) {
         lastAlertAt: prev.lastAlertAt || null,
       };
     } else {
-      const softRetry = /will retry|did not load|not loaded/i.test(result.reason || '');
+      const softRetry = /will retry|did not load|not loaded|blocked request|403/i.test(
+        result.reason || '',
+      );
       if (softRetry) {
         state.dates[key] = prev;
       } else {

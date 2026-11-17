@@ -14,7 +14,8 @@ RUN npm ci --omit=dev
 COPY . .
 
 ENV NODE_ENV=production
-ENV ROLE=all
+# Render IPs are blocked by BMS/Cloudflare — host dashboard only; local worker posts /api/ingest
+ENV ROLE=dashboard
 ENV CHECK_MODE=tls
 ENV PORT=10000
 ENV UV_THREADPOOL_SIZE=16

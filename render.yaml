@@ -11,7 +11,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: ROLE
-        value: all
+        value: dashboard
       - key: CHECK_MODE
         value: tls
       - key: UV_THREADPOOL_SIZE
@@ -26,6 +26,8 @@ services:
         value: IMAX
       - key: POLL_INTERVAL_MS
         value: "60000"
+      - key: INGEST_SECRET
+        sync: false
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY

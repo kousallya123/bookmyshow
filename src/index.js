@@ -21,8 +21,38 @@ async function loadChecker() {
   return mod.checkAllDates;
 }
 
+async function fetchRemoteMonitor() {
+  if (!config.reportUrl) return getMonitor(true);
+  const res = await fetch(`${config.reportUrl}/api/monitor`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Failed to fetch remote monitor (${res.status})`);
+  return res.json();
+}
+
+async function postIngest(results) {
+  if (!config.reportUrl) return null;
+  if (!config.ingestSecret) {
+    console.warn('[ingest] REPORT_URL set but INGEST_SECRET missing — skip post');
+    return null;
+  }
+  const res = await fetch(`${config.reportUrl}/api/ingest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.ingestSecret}`,
+    },
+    body: JSON.stringify({ results }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`ingest failed (${res.status}): ${body.error || res.statusText}`);
+  }
+  console.log(`[ingest] posted ${results.length} result(s) → ${config.reportUrl}`);
+  return body;
+}
+
 async function runCheck() {
-  const monitor = await getMonitor(true);
+  const useRemote = config.role === 'worker' && !!config.reportUrl;
+  const monitor = useRemote ? await fetchRemoteMonitor() : await getMonitor(true);
   const dates = enabledDates(monitor);
   const cinemas = enabledCinemas(monitor);
   console.log(
@@ -63,19 +93,28 @@ async function runCheck() {
     cinemaNames: cinemas,
     bmsUrl: monitor.bmsUrl,
   });
-  await processCheckResults(results, {
-    source: config.checkMode === 'tls' ? 'render-tls' : 'local',
-  });
+
+  if (config.role !== 'worker') {
+    await processCheckResults(results, {
+      source: config.checkMode === 'tls' ? 'render-tls' : 'local',
+    });
+  }
+
+  if (config.role === 'worker' || config.reportUrl) {
+    await postIngest(results);
+  }
+
   return results;
 }
 
 async function seedStatus() {
   const monitor = await getMonitor();
   const dates = enabledDates(monitor);
+  const waitingWorker = config.role === 'dashboard';
   writeStatus({
     updatedAt: null,
     checking: false,
-    source: 'starting',
+    source: waitingWorker ? 'waiting-worker' : 'starting',
     movieName: monitor.movieName,
     cinemaName: monitor.cinemaName,
     city: monitor.city,
@@ -94,7 +133,9 @@ async function seedStatus() {
       pageUrl: buildBmsUrl(date, monitor.bmsUrl),
       checkedAt: null,
       error: null,
-      reason: 'Waiting for first check',
+      reason: waitingWorker
+        ? 'Waiting for local worker (Render IPs are blocked by BookMyShow)'
+        : 'Waiting for first check',
     })),
     alerts: [],
     alert: null,
@@ -107,6 +148,7 @@ async function main() {
 
   console.log('BookMyShow booking monitor');
   console.log(`ROLE=${config.role} | CHECK_MODE=${config.checkMode} | storage=${monitor.storage}`);
+  if (config.reportUrl) console.log(`REPORT_URL=${config.reportUrl}`);
   console.log(`Movie: ${monitor.movieName}`);
   console.log(`Theatre: ${monitor.cinemaName}${monitor.city ? ` · ${monitor.city}` : ''}`);
   console.log(`Rule: redirect / greyed date = NOT OPEN | selected available date = OPEN`);
@@ -116,8 +158,21 @@ async function main() {
     console.log(`  [${mark}] ${d.label} (${d.date}) → ${buildBmsUrl(d.date, monitor.bmsUrl)}`);
   }
 
-  startDashboard();
-  await seedStatus();
+  if (config.role !== 'worker') {
+    startDashboard();
+    await seedStatus();
+  }
+
+  if (config.role === 'dashboard') {
+    console.log('');
+    console.log('Dashboard mode: not checking BMS from this host (Cloudflare blocks Render).');
+    console.log('Run a local worker: ROLE=worker CHECK_MODE=playwright REPORT_URL=<this-url> INGEST_SECRET=<secret>');
+    // Keep process alive for the web service
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      await new Promise((r) => setTimeout(r, 60 * 60 * 1000));
+    }
+  }
 
   if (once) {
     await runCheck();
@@ -131,13 +186,15 @@ async function main() {
       await runCheck();
     } catch (err) {
       console.error('[error]', err.message || err);
-      const prev = readStatus();
-      writeStatus({
-        ...prev,
-        updatedAt: new Date().toISOString(),
-        checking: false,
-        error: err.message || String(err),
-      });
+      if (config.role !== 'worker') {
+        const prev = readStatus();
+        writeStatus({
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          checking: false,
+          error: err.message || String(err),
+        });
+      }
     }
     console.log(`Sleeping ${config.pollIntervalMs / 1000}s...`);
     await new Promise((r) => setTimeout(r, config.pollIntervalMs));
